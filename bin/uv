@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Wrapper to run the project's `uv` using Python 3.12 when available.
+# Usage: ./bin/uv <args>  (or add `bin` to your PATH)
+
+set -euo pipefail
+
+# prefer python3.12, fall back to python3 then python
+PY=python3.12
+if ! command -v "$PY" >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+  else
+    PY=python
+  fi
+fi
+
+exec "$PY" -m uv "$@"
