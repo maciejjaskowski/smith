@@ -41,9 +41,9 @@ class BaselineTransformer(nn.Module):
     self.n_layers = config.n_layers
 
     self.embed = nn.Parameter(t.empty(config.vocab_size, d_model))
-    self.embed = nn.init.kaiming_uniform_(self.embed)
+    nn.init.kaiming_uniform_(self.embed)
     self.positional_embed = nn.Parameter(t.empty(self.max_seq_len, d_model))
-    self.positional_embed = nn.init.kaiming_uniform_(self.positional_embed)
+    nn.init.kaiming_uniform_(self.positional_embed)
 
     self.blocks = nn.ModuleList([
         nn.ModuleDict({"params": nn.ParameterDict({
@@ -63,12 +63,13 @@ class BaselineTransformer(nn.Module):
             nn.init.kaiming_uniform_(p)
     self.act_fn = nn.GELU()
 
+    attention_mask = t.ones((config.max_seq_len, config.max_seq_len)) * float("-inf")
+    attention_mask = t.triu(attention_mask, diagonal=1)
     self.register_buffer(
         "attention_mask",
-        t.empty(config.max_seq_len, config.max_seq_len),
+        attention_mask,
         persistent=False)
-    self.attention_mask = t.ones((config.max_seq_len, config.max_seq_len)) * float("-inf")
-    self.attention_mask = t.triu(self.attention_mask, diagonal=1)
+    
 
     #batch_x_arange = einops.repeat(t.arange(config.max_seq_len, device=x.device), "seq -> batch seq", batch=batch_size).detach()
     self.register_buffer(
