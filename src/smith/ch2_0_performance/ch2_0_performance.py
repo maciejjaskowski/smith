@@ -20,7 +20,7 @@ from smith.ch2_0_performance.baseline import TransformerConfig
 
 
 
-def get_dataloader(max_seq_len, batch_size):
+def get_dataloader(max_seq_len, batch_size, reproducible=False):
     ds = load_dataset("Trelis/tiny-shakespeare")
     
     chunks = []
@@ -51,8 +51,29 @@ def get_dataloader(max_seq_len, batch_size):
 
         return {"inputs": t.stack(inputs)}
 
-    train_loader = DataLoader(tokenized, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,
+    if reproducible:
+        g = torch.Generator()
+        g.manual_seed(1337)
+
+        def _seed_worker(worker_id):
+            # Each worker gets a different, deterministic seed
+            worker_seed = torch.initial_seed() % 2**32
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+        train_loader = DataLoader(tokenized, 
+                              batch_size=batch_size, 
+                              shuffle=True, 
+                              collate_fn=collate_fn,
+                              worker_init_fn=_seed_worker,
+                              generator=g,
                             )
+    else:
+        train_loader = DataLoader(tokenized, 
+                              batch_size=batch_size, 
+                              shuffle=True, 
+                              collate_fn=collate_fn,
+                            )
+    
     return train_loader, vocab_to_token, token_to_vocab
 
 
@@ -106,28 +127,27 @@ def reproducible_step(transformer_type, config: TransformerConfig):
     """
     Returns loss and gradients for a single training step
     """
+    learning_rate = 0.000025
+    steps=1
+    batch_size = 16
     
+    train_loader, vocab_to_token, token_to_vocab = get_dataloader(max_seq_len=config.max_seq_len, 
+                                  batch_size=batch_size,
+                                  reproducible=True)
+    
+    config.vocab_size = len(vocab_to_token)
     model = transformer_type(config)
     model = model.to("cuda")
     
     device = "cuda"
     model.to(device)
 
-    learning_rate = 0.000025
-    steps=1
-    batch_size = 64
+    
 
     optim = Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
     
-    train_loader = DataLoader(tokenized, batch_size=batch_size,
-                          shuffle=True,
-                          collate_fn=collate_fn,
-                          num_workers=4,
-                          persistent_workers=True,
-                          prefetch_factor=16,
-                          # pin_memory=True,
-                          )
+    
     batch = next(iter(train_loader))
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -140,10 +160,11 @@ def reproducible_step(transformer_type, config: TransformerConfig):
             
             loss_val.backward()
             optim.step()
+            grads = {}
             for param in model.parameters():
                 grads[param.name] = param.grad.cpu().detach()
             optim.zero_grad(set_to_none=True)
-    return loss_val, grad
+    return loss_val, grads
 
 # # Start a new wandb run to track this script.
 # run = wandb.init(
