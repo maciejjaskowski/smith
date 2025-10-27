@@ -166,6 +166,32 @@ def reproducible_step(transformer_type, config: TransformerConfig):
             optim.zero_grad(set_to_none=True)
     return loss_val, grads
 
+def set_repro(seed: int = 1337):
+    # --- Python & NumPy
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # --- PyTorch RNGs
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # --- cuDNN / backends
+    torch.backends.cudnn.deterministic = True   # use deterministic algorithms where available
+    torch.backends.cudnn.benchmark = False      # disable auto-tuner (keeps alg choice fixed)
+
+    # Disable TF32 to avoid tiny numeric diffs on Ampere+ GPUs
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    # Enforce determinism across PyTorch ops (may error if an op has no deterministic impl)
+    torch.use_deterministic_algorithms(True)
+
+    # (optional) keep matmul precision consistent on PyTorch 2.x
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("highest")  # or "medium" consistently
+
+
+
 # # Start a new wandb run to track this script.
 # run = wandb.init(
 #     # Set the wandb entity where your project will be logged (generally your team name).
