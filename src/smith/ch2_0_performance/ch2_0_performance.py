@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from datasets import load_dataset
 import einops
 from jaxtyping import Int, Float
@@ -14,10 +15,19 @@ import torch.nn.functional as F
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim import Adam
 from torch.utils.data import DataLoader
-from smith.ch2_0_performance.baseline import TransformerConfig
 
 
-
+@dataclasses.dataclass
+class TransformerConfig:
+  vocab_size: int
+  d_model: int
+  d_head: int
+  n_head: int
+  max_seq_len: int
+  n_layers: int
+  learning_rate: float
+  batch_size: int
+  epochs: int
 
 
 def get_dataloader(max_seq_len, batch_size, reproducible=False):
@@ -77,59 +87,37 @@ def get_dataloader(max_seq_len, batch_size, reproducible=False):
     return train_loader, vocab_to_token, token_to_vocab
 
 
-# model = BaselineTransformer(TransformerConfig(
-#     vocab_size=len(vocab_to_token),
-#     d_model=128,
-#     d_head=16,
-#     n_head=4,
-#     max_seq_len=max_seq_len,
-#     n_layers=2
-# ))
 
+def generate(model_type, config, checkpoint: str, batch_size: int, max_seq_len: int, start_tokens: list[int], device: str):
+  model = model_type(config)
+  model.load_state_dict(torch.load(checkpoint))
+  model = model.to(device)
+  with t.inference_mode():
+    bos_tensor = t.Tensor(start_tokens).to(t.long).to(device)
+    input = einops.repeat(
+        bos_tensor, "s -> batch s",
+        batch=batch_size
+    )
+    for i in range(max_seq_len-1):
+      proba = F.softmax(model(input).detach() , dim=-1)
+      next_proba = proba[:,-1,:]
+      next_sampled = t.multinomial(next_proba, num_samples=1) # TODO: dodac temperature
+      print(f"{next_sampled.shape=} {next_proba.shape=}")
+      print(f"{next_sampled=} {next_proba.max(dim=-1)=} {next_proba[0, next_sampled[0][0]]=}")
+      print("---")
 
+      input = t.concat([input, next_sampled], dim=-1)
 
-# learning_rate = 0.000025
-# epochs = 200
-# batch_size = 64
+    return input, proba
 
-# optim = Adam(model.parameters(), lr=learning_rate)
-
-# Start a new wandb run to track this script.
-# run = wandb.init(
-#     # Set the wandb entity where your project will be logged (generally your team name).
-#     entity="",
-#     # Set the wandb project where this run will be logged.
-#     project="transformers",
-#     # Track hyperparameters and run metadata.
-#     config={
-#         "learning_rate": learning_rate,
-#         "architecture": "Transformer 5",
-#         "dataset": "tiny-shakespear",
-#         "d_head": model.config.d_head,
-#         "d_model": model.config.d_model,
-#         "batch_size": batch_size,
-#         "n_head": model.config.n_head,
-#         "n_layers": model.config.n_layers,
-#         "epochs": epochs,
-#     },
-# )
-
-# transformer_config = TransformerConfig(
-#         vocab_size=len(vocab_to_token),
-#         d_model=512,
-#         d_head=64,
-#         n_head=8,
-#         max_seq_len=max_seq_len,
-#         n_layers=4
-#     )
 
 def reproducible_step(transformer_type, config: TransformerConfig):
     """
     Returns loss and gradients for a single training step
     """
-    learning_rate = 0.000025
+    learning_rate = config.learning_rate
     steps=1
-    batch_size = 16
+    batch_size = config.batch_size
     
     train_loader, vocab_to_token, token_to_vocab = get_dataloader(max_seq_len=config.max_seq_len, 
                                   batch_size=batch_size,
@@ -191,59 +179,206 @@ def set_repro(seed: int = 1337):
         torch.set_float32_matmul_precision("highest")  # or "medium" consistently
 
 
+def train(model_type, config, name):
+# Start a new wandb run to track this script.
+    # Start a new wandb run to track this script.
+    batch_size = config.batch_size
+    epochs = 1
+    device = "cuda"
+    learning_rate = config.learning_rate
+    
+    train_loader, vocab_to_token, token_to_vocab = get_dataloader(max_seq_len=config.max_seq_len, 
+                                  batch_size=batch_size,
+                                  reproducible=True)
+    config.vocab_size = len(vocab_to_token)
+    
+    model = model_type(config).to(device)
+    
+    with wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="",
+        # Set the wandb project where this run will be logged.
+        project="ch2_0_performance",
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": learning_rate,
+            "architecture": name,
+            "dataset": "tiny-shakespear",
+            "d_head": config.d_head,
+            "d_model": config.d_model,
+            "batch_size": batch_size,
+            "n_head": config.n_head,
+            "n_layers": config.n_layers,
+            "epochs": epochs,
+        },
+    ) as run:
+        # run.watch(model)
+        
+        optim = Adam(model.parameters(), lr=learning_rate)
+        loss_fn = nn.CrossEntropyLoss()
 
-# # Start a new wandb run to track this script.
-# run = wandb.init(
-#     # Set the wandb entity where your project will be logged (generally your team name).
-#     entity="",
-#     # Set the wandb project where this run will be logged.
-#     project="transformers",
-#     # Track hyperparameters and run metadata.
-#     config={
-#         "learning_rate": learning_rate,
-#         "architecture": "Transformer 5",
-#         "dataset": "tiny-shakespear",
-#         "d_head": model.config.d_head,
-#         "d_model": model.config.d_model,
-#         "batch_size": batch_size,
-#         "n_head": model.config.n_head,
-#         "n_layers": model.config.n_layers,
-#         "epochs": epochs,
-#     },
-# )
+        epochs = config.epochs
+        steps = 0
+        start = time.time()
+        for epoch in range(epochs):
+            print("=" * 80)
+            print(f"{epoch=}")
+            for batch in train_loader:
+                
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    inp = batch['inputs'].to(device, non_blocking=True)
+                    pred = model(inp[:, :-1]) # 0 -> 1, 1 -> 2, ... n-1 -> eos
+                    loss_val = loss_fn(input=einops.rearrange(pred, "batch seq vocab -> (batch seq) vocab"),
+                                    target=einops.rearrange(inp[:, 1:], "batch seq -> (batch seq)")) # nie przewiduje bos
+
+                    if steps % 400 == 0:
+                        print(f"{loss_val.item()}")
+                    loss_val.backward()
+                    optim.step()
+                    optim.zero_grad(set_to_none=True)
+                run.log({"loss": loss_val.item(),
+                         "epoch": epoch,
+                         "step": steps,
+                        })
+                steps += 1 
+
+        print(f"Elapsed time: {time.time() - start}")
+        os.makedirs(".models", exist_ok=True)
+        torch.save(model.state_dict(), f".models/model_{run.id}.pth")
 
 
 
-# with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-#         profile_memory=True, record_shapes=True,
-#         schedule=t.profiler.schedule(wait=1, warmup=1, active=2, repeat=1)) as prof:
-#   epochs = 1
-#   start = time.time()
-#   for epoch in range(epochs):
-#       print("=" * 80)
-#       print(f"{epoch=}")
-#       for i_batch, batch in enumerate(train_loader):
+def profile_train(model_type, config, name):
+    
 
-#         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-#           input = batch['inputs'].to(device, non_blocking=True)
+    # Start a new wandb run to track this script.
+    batch_size = 32
+    epochs = 2
+    device = "cuda"
+    learning_rate = 0.00025
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="",
+        # Set the wandb project where this run will be logged.
+        project="ch2_0_performance_trace",
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": learning_rate,
+            "architecture": name,
+            "dataset": "tiny-shakespear",
+            "d_head": config.d_head,
+            "d_model": config.d_model,
+            "batch_size": batch_size,
+            "n_head": config.n_head,
+            "n_layers": config.n_layers,
+            "epochs": epochs,
+        },
+    )
+    
+    train_loader, vocab_to_token, token_to_vocab = get_dataloader(max_seq_len=config.max_seq_len, 
+                                  batch_size=batch_size,
+                                  reproducible=True)
+    config.vocab_size = len(vocab_to_token)
+    
+    model = model_type(config).to(device).to(torch.bfloat16)
+    
+    optim = Adam(model.parameters(), lr=learning_rate)
+    loss_fn = nn.CrossEntropyLoss()
 
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            profile_memory=True, record_shapes=True,
+            schedule=t.profiler.schedule(wait=1, warmup=3, active=2, repeat=1)) as prof:
+        
+        start = time.time()
+        for epoch in range(epochs):
+            print("=" * 80)
+            print(f"{epoch=}")
+            for i_batch, batch in enumerate(train_loader):
 
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    inp = batch['inputs'].to(device, non_blocking=True)
 
-#           with record_function("train_step"):
-#               pred = model(input[:, :-1]) # 0 -> 1, 1 -> 2, ... n-1 -> eos
-#               loss_val = loss_fn(input=einops.rearrange(pred, "batch seq vocab -> (batch seq) vocab"),
-#                             target=einops.rearrange(input[:, 1:], "batch seq -> (batch seq)")) # nie przewiduje bos
+                    with record_function("train_step"):
+                        pred = model(inp[:, :-1]) # 0 -> 1, 1 -> 2, ... n-1 -> eos
+                        loss_val = loss_fn(input=einops.rearrange(pred, "batch seq vocab -> (batch seq) vocab"),
+                                        target=einops.rearrange(inp[:, 1:], "batch seq -> (batch seq)")) # nie przewiduje bos
 
-#               if i_batch % 100 == 0:
-#                 print(loss_val)
-#               loss_val.backward()
-#               optim.step()
-#               optim.zero_grad(set_to_none=True)
+                        if i_batch % 100 == 0:
+                            print(loss_val)
+                        loss_val.backward()
+                        optim.step()
+                        optim.zero_grad(set_to_none=True)
 
-#           prof.step()
-#   print(f"Elapsed time: {time.time() - start}")
+                prof.step()
+        print(prof.key_averages(group_by_input_shape=True).table(sort_by="cuda_time_total",row_limit=30))
+        print(f"Elapsed time: {time.time() - start}")
 
+    prof.export_chrome_trace(f"/tmp/{run.id}_trace.json")
+    run.log_artifact(f"/tmp/{run.id}_trace.json", type="trace")
+    run.finish()
 
-# run.finish()
-# model.eval()
+profile_config1 = TransformerConfig(
+        vocab_size=None,
+        d_model=128,
+        d_head=64,
+        n_head=8,
+        max_seq_len=129,
+        n_layers=4,
+        batch_size=32,
+        learning_rate=0.00025,
+        epochs=200,
+    )
 
+profile_config2 = TransformerConfig(
+        vocab_size=None,
+        d_model=512,
+        d_head=32,
+        n_head=8,
+        max_seq_len=129,
+        n_layers=4,
+        batch_size=32,
+        learning_rate=0.00025,
+        epochs=200,
+    )   
+
+profile_config3 = TransformerConfig(
+        vocab_size=None,
+        d_model=1024,
+        d_head=512,
+        n_head=32,
+        max_seq_len=257,
+        n_layers=4,
+        batch_size=32,
+        learning_rate=0.000025,
+        epochs=40,
+    )
+
+if __name__ == "__main__":
+    for batch_size in [64]:
+        for max_seq_len in [128]:
+            for reproducible in [True]:
+
+                dataloader, _, _ = get_dataloader(max_seq_len=128, batch_size=batch_size, reproducible=reproducible)
+                with wandb.init(
+                    # Set the wandb entity where your project will be logged (generally your team name).
+                    entity="",
+                    # Set the wandb project where this run will be logged.
+                    project="ch2_0_performance",
+                    # Track hyperparameters and run metadata.
+                    config={
+                        "architecture": "dataloader",
+                        "dataset": "tiny-shakespear",
+                        "batch_size": batch_size,
+                        "max_seq_len": max_seq_len,
+                        "reproducible": reproducible,
+                    },
+                ) as run: 
+                    steps = 0
+                    for epoch in range(50):
+                        for data in dataloader:
+                            data['inputs'].to("cuda", non_blocking=True)
+                            run.log({
+                                "step": steps,
+                                "epoch": epoch,
+                            })
+                            steps += 1

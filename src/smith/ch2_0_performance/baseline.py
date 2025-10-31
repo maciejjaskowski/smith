@@ -18,15 +18,8 @@ import torch
 import time
 from torch.profiler import profile, record_function, ProfilerActivity
 
+from smith.ch2_0_performance.ch2_0_performance import TransformerConfig, profile_train, profile_config1, profile_config2, train
 
-@dataclasses.dataclass
-class TransformerConfig:
-  vocab_size: int
-  d_model: int
-  d_head: int
-  n_head: int
-  max_seq_len: int
-  n_layers: int
 
 
 class BaselineTransformer(nn.Module):
@@ -130,3 +123,10 @@ class BaselineTransformer(nn.Module):
     x = einops.einsum(x, self.embed, "batch seq d_model, d_vocab d_model -> batch seq d_vocab")
 
     return x
+
+
+if __name__ == "__main__":
+    model_type = BaselineTransformer
+
+    # profile_train(model_type, profile_config1, str(type(model_type)))
+    train(model_type, profile_config2, str(type(model_type)))

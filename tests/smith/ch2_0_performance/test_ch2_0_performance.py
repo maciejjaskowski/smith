@@ -6,7 +6,7 @@ import os, random, numpy as np
 from smith.ch2_0_performance.baseline import BaselineTransformer
 from smith.ch2_0_performance.ch2_0_performance import get_dataloader
 from smith.ch2_0_performance.ch2_0_performance import reproducible_step
-from smith.ch2_0_performance.baseline import TransformerConfig
+from smith.ch2_0_performance.ch2_0_performance import TransformerConfig
 
 # Parametrized so different Baseline implementations can be injected by tests/fixtures.
 @pytest.mark.parametrize("model", [BaselineTransformer])
@@ -80,27 +80,3 @@ def test_reproducibility(model):
         assert t.allclose(grad1[k], grad2[k], atol=1e-4)
     
     
-def set_repro(seed: int = 1337):
-    # --- Python & NumPy
-    random.seed(seed)
-    np.random.seed(seed)
-
-    # --- PyTorch RNGs
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    # --- cuDNN / backends
-    torch.backends.cudnn.deterministic = True   # use deterministic algorithms where available
-    torch.backends.cudnn.benchmark = False      # disable auto-tuner (keeps alg choice fixed)
-
-    # Disable TF32 to avoid tiny numeric diffs on Ampere+ GPUs
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-
-    # Enforce determinism across PyTorch ops (may error if an op has no deterministic impl)
-    torch.use_deterministic_algorithms(True)
-
-    # (optional) keep matmul precision consistent on PyTorch 2.x
-    if hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("highest")  # or "medium" consistently
-
